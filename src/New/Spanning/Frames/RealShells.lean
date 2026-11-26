@@ -468,7 +468,8 @@ lemma formConst_mul_lintegral_le [Nonempty I]
   have h_gain (h_lt : ENNReal.ofReal t⁻¹ < 1) (x : 𝔰.G₁) (_ : x ∈ hF.complexData.positions) :
       φ x ^ 2 ≤ (.ofReal V * .ofReal t⁻¹ ^ hF.complexData.volumeExponent) ^ 2 *
         (hF.gauge hL).weightedSquareProduct j p q F x := by
-    rw [hF.volumeExponent_eq, ← ofReal_pow (by positivity), ← ofReal_mul (by positivity), inv_pow]
+    rw [hF.volumeExponent_eq, ← ofReal_pow (by positivity), ← ofReal_mul (by positivity), inv_pow,
+      ← div_eq_mul_inv]
     exact hφ_gain ((inv_lt_one₀ (by positivity)).1 (ofReal_lt_one.1 h_lt)) x
   have r_le : 9 * 10 ^ 7 * 𝔰.n ^ 4 + r ≤ hF.complexData.volumeExponent := by
     rw [hF.volumeExponent_eq]
@@ -492,7 +493,9 @@ lemma formConst_mul_lintegral_le [Nonempty I]
         π ^ ((2 * 𝔰.ϱ + 1) * 𝔰.k) * L ^ (1000000000 * 𝔰.n ^ 4) by
     have t_pow : t ^ s = t ^ (10 ^ 8 * 𝔰.n ^ 4) * t ^ r := by rw [← pow_add, ← hr]
     rw [t_pow]
-    simpa (disch := finiteness) [V, ← toReal_le_toReal, toReal_ne_zero, ratio_ne_zero,
+    have t_pos : 0 < t := by linarith
+    simpa (disch := first | positivity | simp [mul_eq_top, pow_eq_top_iff, ratio_ne_top,
+        not_le.2 t_pos]) [V, ← toReal_le_toReal, toReal_ne_zero, ratio_ne_zero,
       ratio_ne_top, formConst, scaledVolumeRatio, volU, field, mul_pow, ← pow_mul, abs_of_nonneg]
       using h_powers
   calc
