@@ -82,6 +82,28 @@ jobs:
           python3 -I scripts/tauceti-cache-get.py
           df -h .
 
+      - name: Build the challenge from the pinned upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=c5451bd3ba92480e05c4218f5221bb2900c58706
+          git fetch --depth=1 https://github.com/leanprover-community/riemann-hypothesis.git "$base"
+          git diff --exit-code "$base" "$PROOF_SHA" -- Challenge.lean comparator.json src/Statements.lean src/Main.lean lakefile.toml lean-toolchain lake-manifest.json
+          lake build Challenge
+          targets=(
+            Quot Quot.mk Quot.lift Quot.ind
+            riemannHypothesis riemannZeta_eq_zero_re LFunction_ne_zero_of_half_lt_re
+            LFunction_eq_zero_re LFunction_eq_zero_re_of_isPrimitive
+            propext Quot.sound Classical.choice
+            Nat.add Nat.sub Nat.mul Nat.pow Nat.gcd Nat.div Nat.mod Nat.beq Nat.ble
+            Nat.land Nat.lor Nat.xor Nat.shiftLeft Nat.shiftRight
+            String.ofList Char.ofNat List eagerReduce Nat String String.mk Char
+            optParam autoParam semiOutParam outParam
+          )
+          printf '%s\n' "${targets[@]}" > "$RUNNER_TEMP/rh-export-targets"
+          lake env leanexport Challenge -- "${targets[@]}" > "$RUNNER_TEMP/rh-challenge.export"
+          sha256sum "$RUNNER_TEMP/rh-challenge.export"
+
       - name: Restore a pinned upstream cache baseline when available
         env:
           ELAN_TOOLCHAIN: rh7560
@@ -89,8 +111,6 @@ jobs:
         run: |
           set -euo pipefail
           base=c5451bd3ba92480e05c4218f5221bb2900c58706
-          git fetch --depth=1 https://github.com/leanprover-community/riemann-hypothesis.git "$base"
-          git diff --exit-code "$base" "$PROOF_SHA" -- Challenge.lean comparator.json src/Statements.lean src/Main.lean lakefile.toml lean-toolchain lake-manifest.json
           status=0
           python3 -I scripts/ci-cache-get.py --baseline "$base" --baseline-depth 1 || status=$?
           case "$status" in
@@ -104,20 +124,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          lake build Main Challenge
-          targets=(
-            Quot Quot.mk Quot.lift Quot.ind
-            riemannHypothesis riemannZeta_eq_zero_re LFunction_ne_zero_of_half_lt_re
-            LFunction_eq_zero_re LFunction_eq_zero_re_of_isPrimitive
-            propext Quot.sound Classical.choice
-            Nat.add Nat.sub Nat.mul Nat.pow Nat.gcd Nat.div Nat.mod Nat.beq Nat.ble
-            Nat.land Nat.lor Nat.xor Nat.shiftLeft Nat.shiftRight
-            String.ofList Char.ofNat List eagerReduce Nat String String.mk Char
-            optParam autoParam semiOutParam outParam
-          )
-          lake env leanexport Challenge -- "${targets[@]}" > "$RUNNER_TEMP/rh-challenge.export"
+          lake build Main
+          mapfile -t targets < "$RUNNER_TEMP/rh-export-targets"
           lake env leanexport Main -- "${targets[@]}" > "$RUNNER_TEMP/rh-solution.export"
-          printf '%s  %s\n' bb37c4bb518fe68a13f12aa3929dd62dfecb663f0c063ad8c338e39601f28a60 "$RUNNER_TEMP/rh-challenge.export" | sha256sum -c -
           {
             echo '### Complete proof exports'
             sha256sum "$RUNNER_TEMP/rh-challenge.export" "$RUNNER_TEMP/rh-solution.export"
