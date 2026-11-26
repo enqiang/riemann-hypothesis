@@ -1,0 +1,98 @@
+name: RH 7560 independent replay
+
+on:
+  push:
+    branches: [codex/rh7560-independent-check]
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: Build the candidate and judge its complete export
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    env:
+      LEAN_ABORT_ON_PANIC: "1"
+      MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Record the proof source and check the runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This workflow is the only difference from the commit being verified.
+          git diff --exit-code HEAD^ HEAD -- src Challenge.lean comparator.json lakefile.toml lake-manifest.json lean-toolchain
+          {
+            echo '### Source of the proof'
+            git rev-parse HEAD^ HEAD^:src
+            cat lean-toolchain
+            sha256sum Challenge.lean comparator.json src/Statements.lean src/Main.lean lake-manifest.json
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h .
+          free -h
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid -- /usr/bin/true
+
+      - name: Install the pinned Lean release
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.37.0-rc1-linux.tar.zst"
+          curl --fail --location --retry 3 'https://github.com/leanprover/lean4/releases/download/v4.37.0-rc1/lean-4.37.0-rc1-linux.tar.zst' -o "$archive"
+          printf '%s  %s\n' '2e1bbb832870bb81b7131cb70b13aec2cc7ed9f22e2bdbb236b86076ae20382d' "$archive" | sha256sum -c -
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          rm "$archive"
+          echo "$RUNNER_TEMP/lean-4.37.0-rc1-linux/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependency caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean --version
+          lake exe mathlib/cache get
+          lake exe mathlib/cache clean
+          python3 -I scripts/tauceti-cache-get.py
+          df -h .
+
+      - name: Build and export the candidate without a project build cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake build Main Challenge
+          targets=(
+            Quot Quot.mk Quot.lift Quot.ind
+            riemannHypothesis riemannZeta_eq_zero_re LFunction_ne_zero_of_half_lt_re
+            LFunction_eq_zero_re LFunction_eq_zero_re_of_isPrimitive
+            propext Quot.sound Classical.choice
+            Nat.add Nat.sub Nat.mul Nat.pow Nat.gcd Nat.div Nat.mod Nat.beq Nat.ble
+            Nat.land Nat.lor Nat.xor Nat.shiftLeft Nat.shiftRight
+            String.ofList Char.ofNat List eagerReduce Nat String String.mk Char
+            optParam autoParam semiOutParam outParam
+          )
+          lake env leanexport Challenge -- "${targets[@]}" > "$RUNNER_TEMP/rh-challenge.export"
+          lake env leanexport Main -- "${targets[@]}" > "$RUNNER_TEMP/rh-solution.export"
+          printf '%s  %s\n' bb37c4bb518fe68a13f12aa3929dd62dfecb663f0c063ad8c338e39601f28a60 "$RUNNER_TEMP/rh-challenge.export" | sha256sum -c -
+          {
+            echo '### Complete proof exports'
+            sha256sum "$RUNNER_TEMP/rh-challenge.export" "$RUNNER_TEMP/rh-solution.export"
+            wc -c "$RUNNER_TEMP/rh-challenge.export" "$RUNNER_TEMP/rh-solution.export"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare the trusted statements and replay with Lean and nanoda
+        env:
+          COMPARATOR_BWRAP: /usr/bin/bwrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="$PWD/comparator.json"
+          cd "$RUNNER_TEMP"
+          lake comparator --config "$config" --challenge-from-export "$RUNNER_TEMP/rh-challenge.export" \
+            --solution-from-export "$RUNNER_TEMP/rh-solution.export" 2>&1 | tee "$RUNNER_TEMP/rh-verdict.log"
+          grep -F 'Your solution is okay!' "$RUNNER_TEMP/rh-verdict.log"
+          printf '\nComparator accepted the complete export against the pinned challenge, with nanoda enabled.\n' >> "$GITHUB_STEP_SUMMARY"
