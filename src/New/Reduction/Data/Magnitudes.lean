@@ -436,7 +436,8 @@ lemma hasLogLower_of_le [D.HasLogLower G l'] (hGF : G ≤ F) : D.HasLogLower F l
 
 section
 
--- The default proof of `l < l'` first clears all hypotheses but `D`, which keeps the comparison small.
+-- The default proof of `l < l'` first clears all hypotheses but `D`
+-- to keep the comparison small.
 variable [D.HasLogUpper F l] [D.HasLogLower G l'] [D.HasLogUpper A l] [D.HasLogLower B l']
 
 include D
