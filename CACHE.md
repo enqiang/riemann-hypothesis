@@ -70,10 +70,13 @@ the record is computed from the commit's Git objects, the map and manifest must 
 `ci-cache-get.py`'s checks for those inputs, the modules must be exactly the source files under
 `src`, and every artifact (staged, or else downloaded from the public cache) must have the
 manifest's SHA-256, be named by its stock Lake content hash, and extract with stock leantar.
-Only then does the job, in the environment `ci-cache-publish` (deployable from `main` only),
-read `R2_ACCOUNT_TOKEN` and write the new artifacts, the map, the manifest and the record, each
-with `If-None-Match`, so nothing is overwritten. A second fresh runner then runs
-`lake exe cache get` on the commit, and `lake build --no-build` must succeed. A manual run
+The staging job then uploads the new artifacts, map and manifest and hands the candidate
+receipt to the other jobs. A second fresh runner restores the dependencies and uses
+`scripts/ci-cache-get.py --candidate` to restore that receipt. The restore requires
+`lake build --no-build` to succeed. After acceptance, the activation job creates the
+public input-fingerprint record from the same receipt. Both write steps use
+`If-None-Match` and take `R2_ACCOUNT_TOKEN` from the `ci-cache-publish` environment
+(deployable from `main` only). A manual run
 (`workflow_dispatch`, inputs `sha`, optionally `run_id`, and `publish`) publishes any successful
 self-hosted build of a given commit, or with `publish` false only verifies it. After this,
 `python3 scripts/ci-cache-get.py --print-identity`, run on a published commit, gives new contents
