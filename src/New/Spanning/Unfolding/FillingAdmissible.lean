@@ -613,7 +613,20 @@ lemma abs_log_mainSecondMoment_div_identitySecondMoment_sub_le :
       |D.f * (D.m - 1) * (D.ϱ * log (D.M * D.rootDisc / 2 / π) + log (√D.rootDisc / 2 / π)) -
       D.m * ∑ v : D.Φ, log (D.weight v)| ≤ D.f * D.k * D.logB / 4 - (log (1 + D.b⁻¹ ^ 9) +
         D.m * (D.m * ∑ v : D.Φ, log (D.weight v) + D.f * D.r * D.x⁻¹) + D.f * D.k * √D.logB) :=
-    le_sub_iff_add_le.mpr D.le_of_hasLogBound
+    -- The default `h_exp` tactic (`scale_arith`) splits all the `max` cases and times out here.
+    le_sub_iff_add_le.mpr (D.le_of_hasLogBound (h_exp := by
+      clear_aux_decl
+      clear * - D
+      repeat clear ‹_›
+      obtain ⟨⟨_, _, _, _⟩, _, _, _, _, _⟩ := New.Data.scale_inequalities' D
+      simp only [Bool.false_eq_true, ↓reduceIte, ← max_add_add_right, ← max_add_add_left,
+        ← max_sub_sub_right, ← max_div_div_right (zero_le_two (α := ℝ)), Nat.cast_ofNat,
+        max_lt_iff]
+      and_intros
+      all_goals
+        try simp only [max_def]
+        try split_ifs
+      all_goals linarith))
   rw [mainSecondMoment_div_identitySecondMoment_eq, h_order]
   simp only [eq_tsub_of_add_eq D.r_add_one] at *
   -- Expand the logarithms and the sums: `sum_range_sub` telescopes the mass terms, and
