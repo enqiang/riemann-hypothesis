@@ -1,0 +1,57 @@
+name: Verify the Lean info message check
+
+on:
+  push:
+    branches: [codex/verify-rh1087-info]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install the pinned Lean toolchain
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Test unguarded, replayed, and guarded info output
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ELAN_TOOLCHAIN="$(cat lean-toolchain)"
+          checker="$PWD/scripts/check-build-log.py"
+          dir="$RUNNER_TEMP/info-fixture"
+          mkdir -p "$dir/src"
+          cd "$dir"
+          cat > lakefile.toml <<'TOML'
+          name = "InfoFixture"
+          srcDir = "src"
+          defaultTargets = ["InfoFixture"]
+
+          [[lean_lib]]
+          name = "InfoFixture"
+          TOML
+          printf '%s\n' '#check Nat' > src/InfoFixture.lean
+          for stage in fresh replayed; do
+            lake build 2>&1 | tee "$stage.log"
+            status=0
+            python3 -I "$checker" "$stage.log" || status=$?
+            test "$status" = 1
+          done
+          printf '%s\n' '/-- info: Nat : Type -/' '#guard_msgs in' '#check Nat' > src/InfoFixture.lean
+          lake build 2>&1 | tee guarded.log
+          python3 -I "$checker" guarded.log
+      - name: Verify the existing project build output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/tests/test_check_build_log.py
+          lake exe cache get
+          lake build 2>&1 | tee build.log
+          python3 -I scripts/check-build-log.py build.log
