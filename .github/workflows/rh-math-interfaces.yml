@@ -1,0 +1,105 @@
+name: Verify the revised orthonormalization declaration
+
+on:
+  push:
+    branches: [codex/verify-rh-9346-review]
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: Elaborate the change and check the public theorems
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      PROOF_SHA: d01e45aa9fa945a554550ebca460f0e61c053484
+      LEAN_ABORT_ON_PANIC: "1"
+      MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Record the proof source and check the runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This workflow is the only difference from the commit being verified.
+          git diff --exit-code "$PROOF_SHA" HEAD -- src Challenge.lean comparator.json lakefile.toml lake-manifest.json lean-toolchain
+          {
+            echo '### Source of the proof'
+            git rev-parse "$PROOF_SHA" "$PROOF_SHA:src"
+            cat lean-toolchain
+            sha256sum Challenge.lean comparator.json src/Statements.lean src/Main.lean lake-manifest.json
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h .
+          free -h
+
+      - name: Install the pinned Lean release
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.37.0-rc1-linux.tar.zst"
+          curl --fail --location --retry 3 'https://github.com/leanprover/lean4/releases/download/v4.37.0-rc1/lean-4.37.0-rc1-linux.tar.zst' -o "$archive"
+          printf '%s  %s\n' '2e1bbb832870bb81b7131cb70b13aec2cc7ed9f22e2bdbb236b86076ae20382d' "$archive" | sha256sum -c -
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          rm "$archive"
+          echo "$RUNNER_TEMP/lean-4.37.0-rc1-linux/bin" >> "$GITHUB_PATH"
+
+      - name: Link the verified Lean install for the existing cache helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/rh-elan.tar.gz"
+          curl --fail --location --retry 3 'https://github.com/leanprover/elan/releases/download/v4.4.0/elan-x86_64-unknown-linux-gnu.tar.gz' -o "$archive"
+          printf '%s  %s\n' '0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2' "$archive" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/rh-elan"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/rh-elan"
+          "$RUNNER_TEMP/rh-elan/elan-init" -y --no-modify-path --default-toolchain none
+          "$HOME/.elan/bin/elan" toolchain link rh7560 "$RUNNER_TEMP/lean-4.37.0-rc1-linux"
+          test "$(ELAN_TOOLCHAIN=rh7560 "$HOME/.elan/bin/elan" which lean)" -ef "$RUNNER_TEMP/lean-4.37.0-rc1-linux/bin/lean"
+          mkdir "$RUNNER_TEMP/rh-cache-tools"
+          ln -s "$HOME/.elan/bin/elan" "$RUNNER_TEMP/rh-cache-tools/elan"
+          echo "$RUNNER_TEMP/rh-cache-tools" >> "$GITHUB_PATH"
+
+      - name: Restore dependency caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean --version
+          lake exe mathlib/cache get
+          lake exe mathlib/cache clean
+          python3 -I scripts/tauceti-cache-get.py
+          df -h .
+
+      - name: Restore a pinned upstream cache baseline when available
+        env:
+          ELAN_TOOLCHAIN: rh7560
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=7c4ccbd64d02774b0a5b40a5f923f5b7a18e8abc
+          git fetch --depth=1 https://github.com/leanprover-community/riemann-hypothesis.git "$base"
+          git diff --exit-code "$base" "$PROOF_SHA" -- Challenge.lean comparator.json src/Statements.lean src/Main.lean lakefile.toml lean-toolchain lake-manifest.json
+          status=0
+          python3 -I scripts/ci-cache-get.py --baseline "$base" --baseline-depth 1 || status=$?
+          case "$status" in
+            0|4) echo "Project cache restore status: $status" ;;
+            3) echo "No project cache baseline found; Lake will build the sources." ;;
+            *) exit "$status" ;;
+          esac
+          df -h .
+
+      - name: Build the reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake build +Lib.General.LinearAlgebra.PolarDecomposition
+          lake env lean scripts/ReviewFixture.lean
+
