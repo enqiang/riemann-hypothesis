@@ -32,11 +32,11 @@ jobs:
           echo "CHECK_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git config user.name StyleFixture
           git config user.email fixture@example.com
-          printf 'def styleFixture := 1\n-- \uE000\n' > src/StyleFixture.lean
+          printf 'def styleFixture := 1\n-- A comment preserved across both commits.\n-- \uE000\n' > src/StyleFixture.lean
           git add src/StyleFixture.lean
           git commit -m "Fixture with one existing diagnostic"
           baseline=$(git rev-parse HEAD)
-          printf '\ndef styleFixture := 2\n-- \uE000\n' > src/StyleFixture.lean
+          printf '\ndef styleFixture := 2\n-- A comment preserved across both commits.\n-- \uE000\n' > src/StyleFixture.lean
           git add src/StyleFixture.lean
           git commit -m "Move the inherited diagnostic without adding a new one"
           python3 -I scripts/lint-style.py "$baseline"
@@ -52,7 +52,7 @@ jobs:
           python3 -I scripts/lint-style.py "$baseline" > "$RUNNER_TEMP/diagnostics" 2>&1 || status=$?
           cat "$RUNNER_TEMP/diagnostics"
           test "$status" = 1
-          test "$(grep -c 'RenamedStyleFixture.lean:5:' "$RUNNER_TEMP/diagnostics")" = 1
+          test "$(grep -c 'RenamedStyleFixture.lean:6:' "$RUNNER_TEMP/diagnostics")" = 1
           grep 'lowerCaseFixture.*UpperCamelCase' "$RUNNER_TEMP/diagnostics"
       - name: Check the project through the public cache
         run: |
