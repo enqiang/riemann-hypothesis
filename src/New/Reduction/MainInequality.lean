@@ -17,7 +17,9 @@ errors,
 
     mainAmount ≤ (V + 2 δ) / dim ≤ mainAmount - (n / dim) m rem,
 
-where the lower bound is Theorem C. The main amount cancels.
+where the lower bound is Theorem C. The main amount cancels. The proof first keeps the cost of
+the missing dimensions in `mul_remainder_le_of_covolume_index_comparison`, then bounds it using
+the near-full rank from Theorem B.
 
 Notions from other files:
 
@@ -85,6 +87,17 @@ namespace New
 
 open Real Finset Data Module Submodule
 
+/-- Cancelling the main amount in the covolume comparison bounds the remainder with the
+completion cost still explicit. Each of the `dim - n` missing dimensions contributes
+`completionCost - mainAmount`; the index bound contributes twice. -/
+theorem mul_remainder_le_of_covolume_index_comparison
+    {dim n mainAmount remainder sizeError scalarLoss indexBound completionCost : ℝ}
+    (h : dim * (mainAmount - sizeError - scalarLoss) ≤
+      n * (mainAmount - remainder + sizeError) + 2 * indexBound + (dim - n) * completionCost) :
+    n * remainder ≤ (dim + n) * sizeError + dim * scalarLoss + 2 * indexBound +
+      (dim - n) * (completionCost - mainAmount) := by
+  nlinarith only [h]
+
 /-- **Main inequality.** For the data `D` we have `m rem ≤ f a log⁵ b`.
 
 The parameters `P` are a multiple `q₀` of `18480` and a prime `d ≡ q₀/2 - 1 mod q₀`. The scales are
@@ -93,7 +106,7 @@ integers with `(log b) ^ 100 ≤ x`, `x ^ 10⁶ ≤ x₁`, `x₁ ^ 10⁶ ≤ b` 
 theorem star_inequality {P : Parameters} (D : Data P) :
     D.m * D.totalRemainder ≤ D.f * D.a * D.logB ^ 5 := by
   -- Choose many independent images of short integral forms, bound their covolume and index from
-  -- above, and compare with the lower bound `integral_forms_long`.
+  -- above, and compare with the lower bound `integral_forms_long_with_completion_cost`.
   obtain ⟨h_dim_pos, t, h_translate_budget, h_span_dimension⟩ :
       0 < D.targetDim ∧ ∃ t : Finset D.chosenGL,
       #t * finrank ℂ D.ramifiedSourceForms ≤ 5 * D.targetDim * log (1 + 2 * D.b ^ 2) ∧
@@ -116,7 +129,8 @@ theorem star_inequality {P : Parameters} (D : Data P) :
     obtain ⟨y, hy_mem, -, h_indep⟩ := exists_fun_fin_finrank_span_eq ℂ images
     refine ⟨finrank ℂ (span ℂ images), y, h_indep, by rwa [span_eq], fun i ↦ ?_⟩
     simpa only [images, Set.mem_iUnion, exists_prop] using hy_mem i
-  have hn_le : (n : ℝ) ≤ D.targetDim := by simpa using h_indep.fintype_card_le_finrank
+  have h_rank : n ≤ D.targetDim := by simpa using h_indep.fintype_card_le_finrank
+  have hn_le : (n : ℝ) ≤ D.targetDim := by exact_mod_cast h_rank
   -- Covolume: each form has squared length at most `exp logNormBound`.
   have h_covolume_upper : D.targetLattice.CovolumeLe y (n * logNormBound) := by
     refine TwistedLattice.covolumeLe_of_normSqAt_le fun i σ ↦ ?_
@@ -133,20 +147,30 @@ theorem star_inequality {P : Parameters} (D : Data P) :
     calc #t * finrank ℂ D.ramifiedSourceForms * (2 * D.errorUnit)
         ≤ 5 * D.targetDim * log (1 + 2 * D.b ^ 2) * (2 * D.errorUnit) := by grw [h_translate_budget]
       _ = D.targetDim * indexBudgetPerDim := by ring
-  -- C: apply the lower bound to the same family. The index is counted twice (the two Gram
-  -- variables); the nonnegative main amount cancels using `n ≤ targetDim`.
+  -- C: retain the cost of completing the chosen family before estimating its codimension.
+  let completionCost : ℝ := 2 * D.x₁ ^ 2 * D.b ^ 2 + D.b
   have h_volume_index_lower :
-      D.targetDim * (D.mainAmount - 3 * sizeError) ≤
-        n * logNormBound + 2 * (D.targetDim * indexBudgetPerDim) :=
-    integral_forms_long h_indep h_near_full_rank h_index_upper h_covolume_upper
+      D.targetDim * (D.mainAmount - sizeError - D.b) ≤
+        n * (D.mainAmount - D.m * D.totalRemainder + sizeError) +
+          2 * (D.targetDim * indexBudgetPerDim) + ((D.targetDim : ℝ) - n) * completionCost :=
+    integral_forms_long_with_completion_cost h_indep h_index_upper h_covolume_upper
+  have h_explicit := mul_remainder_le_of_covolume_index_comparison h_volume_index_lower
+  have h_completion : ((D.targetDim : ℝ) - n) * completionCost ≤ D.targetDim * D.b := by
+    have h_card : D.targetDim = n + (D.targetDim - n) := by omega
+    have h_cost := mul_completion_cost_le h_near_full_rank h_card
+    rwa [Nat.cast_sub h_rank] at h_cost
+  -- Absorb the completion and scalar costs into the existing per-dimension budget.
   have h_loss_pos : 0 < sizeError := HasLogBound.pos D
-  have h_main_comparison :
-      n * (D.mainAmount + sizeError) ≤ D.targetDim * (D.mainAmount + sizeError) :=
-    mul_le_mul_of_nonneg_right hn_le (add_nonneg D.mainAmount_nonneg h_loss_pos.le)
+  have h_missing_main_nonneg : 0 ≤ ((D.targetDim : ℝ) - n) * D.mainAmount :=
+    mul_nonneg (sub_nonneg.mpr hn_le) D.mainAmount_nonneg
+  have h_b_le_error : D.targetDim * D.b ≤ D.targetDim * sizeError :=
+    mul_le_mul_of_nonneg_left D.le_of_hasLogBound D.targetDim.cast_nonneg
+  have h_short_error : n * sizeError ≤ D.targetDim * sizeError :=
+    mul_le_mul_of_nonneg_right hn_le h_loss_pos.le
   let totalErrorPerDim : ℝ := 4 * sizeError + 2 * indexBudgetPerDim
   have h_main_cancelled : n * (D.m * D.totalRemainder) ≤ D.targetDim * totalErrorPerDim := by
-    simp only [logNormBound, totalErrorPerDim] at h_volume_index_lower ⊢
-    linarith only [h_volume_index_lower, h_main_comparison]
+    dsimp only [totalErrorPerDim]
+    nlinarith only [h_explicit, h_completion, h_missing_main_nonneg, h_b_le_error, h_short_error]
   -- Divide by `n ≥ targetDim / 2 > 0`.
   have h_half_dimension : (D.targetDim : ℝ) ≤ n * 2 := by
     have h_share : 4 / D.b ^ 2 ≤ 2⁻¹ := D.le_of_hasLogBound
