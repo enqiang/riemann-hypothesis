@@ -1,0 +1,89 @@
+name: Verify compiled declaration comparisons
+
+on:
+  push:
+    branches: [codex/verify-rh8343-declaration-diff-v2]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Compare independently compiled declarations
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(cat lean-toolchain)
+          elan toolchain install "$toolchain"
+          export ELAN_TOOLCHAIN="$toolchain"
+          root="$RUNNER_TEMP/declarations"
+          mkdir -p "$root/before" "$root/after" "$root/proof" "$root/incomplete"
+          cat > "$root/before/Shared.lean" <<'LEAN'
+          module
+          public import Init
+          public class Marks where
+            mark : Nat
+          LEAN
+          cat > "$root/before/Left.lean" <<'LEAN'
+          module
+          public import Shared
+          public instance marksLeft : Marks := ⟨1⟩
+          LEAN
+          cat > "$root/before/Right.lean" <<'LEAN'
+          module
+          public import Shared
+          public instance marksRight : Marks := ⟨2⟩
+          LEAN
+          cat > "$root/before/Check.lean" <<'LEAN'
+          module
+          public import Left
+          public theorem importedType : Marks.mark = Marks.mark := rfl
+          public def importedBody : Nat := Marks.mark
+          private def localBody : Nat := Marks.mark
+          public def keepsLocal : Nat := localBody
+          LEAN
+          cp "$root/before/"*.lean "$root/after/"
+          cp "$root/before/"*.lean "$root/proof/"
+          sed -i 's/public import Left/public import Right/' "$root/after/Check.lean"
+          sed -i 's/:= rfl/:= Eq.trans rfl rfl/' "$root/proof/Check.lean"
+          for side in before after proof; do
+            (cd "$root/$side" && export LEAN_PATH="$PWD" &&
+              for module in Shared Left Right Check; do lean -o "$module.olean" "$module.lean" || exit; done)
+          done
+          status=0
+          lean --run scripts/CompareDecls.lean "$root/before/Check.olean" "$root/after/Check.olean" > "$root/diff" || status=$?
+          cat "$root/diff"
+          test "$status" = 1
+          grep -Fx "type changed importedType" "$root/diff"
+          grep -Fx "definition body changed importedBody" "$root/diff"
+          grep -E "^definition body changed _private\..*localBody" "$root/diff"
+          lean --run scripts/CompareDecls.lean "$root/before/Check.olean" "$root/proof/Check.olean"
+          cp "$root/after/Check.olean" "$root/incomplete/"
+          status=0
+          lean --run scripts/CompareDecls.lean "$root/before/Check.olean" "$root/incomplete/Check.olean" > "$root/missing" 2>&1 || status=$?
+          test "$status" = 1
+          grep "Missing object file" "$root/missing"
+          printf '%s\n' 'def plain : Nat := 1' > "$root/before/Plain.lean"
+          printf '%s\n' 'def plain : Nat := 2' > "$root/after/Plain.lean"
+          for side in before after; do
+            (cd "$root/$side" && lean -o Plain.olean Plain.lean)
+          done
+          status=0
+          lean --run scripts/CompareDecls.lean "$root/before/Plain.olean" "$root/after/Plain.olean" > "$root/plain" || status=$?
+          test "$status" = 1
+          grep -Fx "definition body changed plain" "$root/plain"
+      - name: Verify the full Lean project
+        run: |
+          lake exe cache get
+          lake build
