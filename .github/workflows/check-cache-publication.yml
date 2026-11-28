@@ -1,0 +1,150 @@
+name: Verify the active cache receipt before confirmation
+permissions:
+  contents: read
+  actions: read
+jobs:
+  stage:
+    name: Stage against the public cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      receipt: ${{ steps.stage.outputs.receipt }}
+    steps:
+    - name: Check out main's publishing code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Verify legacy failures, healthy recovery, and publication races
+      run: python3 -I -m unittest discover -s scripts/tests -q
+    - name: Choose the commit
+      id: target
+      env:
+        SHA: 7c4ccbd64d02774b0a5b40a5f923f5b7a18e8abc
+      run: '[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full
+        commit hash"; exit 1; }
+
+        git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch --no-tags origin
+        "$SHA"
+
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+        '
+    - name: Reconstruct the public build's staging metadata
+      env:
+        SHA: ${{ steps.target.outputs.sha }}
+      run: python3 -I scripts/cache-publication-harness.py fixture
+    - name: Install elan and the commit's toolchain
+      env:
+        SHA: ${{ steps.target.outputs.sha }}
+      run: "toolchain=$(git show \"$SHA:lean-toolchain\" | tr -d '[:space:]')\n[[\
+        \ \"$toolchain\" =~ ^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$\
+        \ ]] || {\n  echo \"::error::unexpected toolchain $toolchain\"; exit 1; }\n\
+        curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh\
+        \ -o \"$RUNNER_TEMP/elan-init.sh\"\nsh \"$RUNNER_TEMP/elan-init.sh\" -y --default-toolchain\
+        \ none --no-modify-path\n\"$HOME/.elan/bin/elan\" toolchain install \"$toolchain\"\
+        \necho \"$HOME/.elan/bin\" >> \"$GITHUB_PATH\"\n"
+    - name: Verify and stage the cache
+      id: stage
+      env:
+        SHA: ${{ steps.target.outputs.sha }}
+        PUBLISH: 'true'
+      run: "# An artifact without new files has no artifacts/ directory.\nmkdir -p\
+        \ \"$RUNNER_TEMP/staging/artifacts\"\nextra=()\nreceipt=\"$RUNNER_TEMP/candidate.json\"\
+        \nif [[ \"$PUBLISH\" == true ]]; then\n  extra+=(--stage-receipt \"$receipt\"\
+        )\nfi\npython3 -I scripts/cache-publication-harness.py --sha \"$SHA\" --staging\
+        \ \"$RUNNER_TEMP/staging\" \"${extra[@]}\"\nif [[ \"$PUBLISH\" == true ]];\
+        \ then\n  printf 'receipt=%s\\n' \"$(base64 -w 0 \"$receipt\")\" >> \"$GITHUB_OUTPUT\"\
+        \nfi\n"
+  accept:
+    name: accept
+    needs: stage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - name: Check out the candidate's commit
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.stage.outputs.sha }}
+        path: project
+        persist-credentials: false
+    - name: Check out main's cache restore code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: cache-tools
+        persist-credentials: false
+    - name: Install elan
+      run: 'curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+        -o "$RUNNER_TEMP/elan-init.sh"
+
+        sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path
+
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+        '
+    - name: Restore dependencies and accept the selected cache
+      working-directory: project
+      env:
+        RECEIPT: ${{ needs.stage.outputs.receipt }}
+        MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+      run: "[[ -n \"$RECEIPT\" ]]\nprintf '%s' \"$RECEIPT\" | base64 --decode > \"\
+        $RUNNER_TEMP/candidate.json\"\nulimit -Sn \"$(ulimit -Hn)\"\nlake exe mathlib/cache\
+        \ get\nexport LAKE_CACHE_DIR=\"$PWD/.lake/cache\"\nif [[ -d .lake/packages/TauCeti\
+        \ ]]; then\n  python3 -I ../cache-tools/scripts/tauceti-cache-get.py --project\
+        \ \"$PWD\"\nfi\nif ! python3 -I ../cache-tools/scripts/ci-cache-get.py --candidate\
+        \ \"$RUNNER_TEMP/candidate.json\"; then\n  echo \"::error::Cache acceptance\
+        \ failed. If staging selected an active record, see CACHE.md#recovering-a-published-record.\"\
+        \n  exit 1\nfi\n"
+    - name: Verify normal Lake restore and full build
+      working-directory: project
+      run: 'ulimit -Sn "$(ulimit -Hn)"
+
+        cp ../cache-tools/scripts/{ci-cache-get,tauceti-cache-get}.py scripts/
+
+        lake exe cache get
+
+        lake build
+
+        '
+  activate:
+    name: activate
+    needs:
+    - stage
+    - accept
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Check out main's publishing code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Fetch the accepted commit if needed
+      env:
+        SHA: ${{ needs.stage.outputs.sha }}
+      run: '[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full
+        commit hash"; exit 1; }
+
+        git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch --no-tags origin
+        "$SHA"
+
+        '
+    - name: Activate the accepted cache
+      env:
+        SHA: ${{ needs.stage.outputs.sha }}
+        RECEIPT: ${{ needs.stage.outputs.receipt }}
+      run: '[[ -n "$RECEIPT" ]]
+
+        printf ''%s'' "$RECEIPT" | base64 --decode > "$RUNNER_TEMP/candidate.json"
+
+        python3 -I scripts/cache-publication-harness.py --sha "$SHA" --activate "$RUNNER_TEMP/candidate.json"
+
+        '
+'on':
+  push:
+    branches:
+    - codex/verify-rh9306-review
