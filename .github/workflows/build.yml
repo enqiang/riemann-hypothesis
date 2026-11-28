@@ -96,11 +96,9 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           "$HOME/.elan/bin/lake" --version
 
-      - name: Test the cache baseline selection and build log check
+      - name: Test the cache baseline selection
         if: steps.queue.outputs.tested != 'true'
-        run: |
-          python3 -I scripts/tests/test_ci_cache_baseline.py
-          python3 -I scripts/tests/test_check_build_log.py
+        run: python3 -I scripts/tests/test_ci_cache_baseline.py
 
       - name: Restore Mathlib's cache
         if: steps.queue.outputs.tested != 'true'
@@ -114,6 +112,10 @@ jobs:
         # As in scripts/lake-cache-get.sh: checks the Mathlib pins agree and that the statements
         # import no Tau Ceti module, then fetches the oleans of the imported Tau Ceti modules.
         run: python3 scripts/tauceti-cache-get.py
+
+      - name: Test the Lean info diagnostic check
+        if: steps.queue.outputs.tested != 'true'
+        run: python3 -I scripts/tests/test_check_build_log.py
 
       - name: Restore this project's cache
         if: steps.queue.outputs.tested != 'true'
