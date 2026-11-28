@@ -1,0 +1,95 @@
+name: Verify Mathlib text-style Unicode diagnostics
+
+on:
+  push:
+    branches: [codex/verify-rh9327-unicode]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Install the pinned Lean toolchain
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Restore the linter dependency
+        run: lake exe mathlib/cache get Mathlib.Tactic.Linter.TextBased
+      - name: Test the linter against clean and regressing paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CHECK_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git config user.name StyleFixture
+          git config user.email fixture@example.com
+          printf 'def styleFixture := 1\n-- A comment preserved across both commits.\n-- \uE000\n' > src/StyleFixture.lean
+          git add src/StyleFixture.lean
+          git commit -m "Fixture with one existing diagnostic"
+          baseline=$(git rev-parse HEAD)
+          printf '\ndef styleFixture := 2\n-- A comment preserved across both commits.\n-- \uE000\n' > src/StyleFixture.lean
+          git add src/StyleFixture.lean
+          git commit -m "Move the inherited diagnostic without adding a new one"
+          python3 -I scripts/lint-style.py "$baseline"
+          git mv src/StyleFixture.lean src/RenamedStyleFixture.lean
+          git commit -m "Rename the file with inherited debt"
+          python3 -I scripts/lint-style.py "$baseline"
+          printf '%s\n' '-- extra diagnostic' >> src/RenamedStyleFixture.lean
+          printf -- '-- \uE000\n' >> src/RenamedStyleFixture.lean
+          git add src
+          git commit -m "Add another prohibited character and an invalid module name"
+          status=0
+          python3 -I scripts/lint-style.py "$baseline" > "$RUNNER_TEMP/diagnostics" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/diagnostics"
+          test "$status" = 1
+          test "$(grep -c 'RenamedStyleFixture.lean:6:' "$RUNNER_TEMP/diagnostics")" = 1
+          printf 'def badNameFixture := 2\n' > src/lowerCaseFixture.lean
+          git add src/lowerCaseFixture.lean
+          git commit -m "Add an invalid module name"
+          status=0
+          python3 -I scripts/lint-style.py "$baseline" > "$RUNNER_TEMP/names" 2>&1 || status=$?
+          test "$status" = 1
+          grep 'lowerCaseFixture.*UpperCamelCase' "$RUNNER_TEMP/names"
+      - name: Verify Unicode separators in Mathlib diagnostic records
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=src/UnicodeFixture.lean
+          printf 'def unicodeFixture := 1\n-- \u2028 line separator\n-- \u2029 paragraph separator\n' > "$file"
+          git add "$file"
+          git commit -m "Fixture with two inherited Unicode separators"
+          inherited=$(git rev-parse HEAD)
+          printf '\ndef unicodeFixture := 1\n-- \u2028 line separator\n-- \u2029 paragraph separator\n' > "$file"
+          git add "$file"
+          git commit -m "Move the two existing diagnostics"
+          python3 -I scripts/lint-style.py "$inherited"
+
+          printf 'def unicodeFixture := 1\n' > "$file"
+          git add "$file"
+          git commit -m "Remove the two inherited separators"
+          python3 -I scripts/lint-style.py "$inherited"
+          clean=$(git rev-parse HEAD)
+
+          git show "$inherited:$file" > "$file"
+          git add "$file"
+          git commit -m "Introduce two new Unicode separators"
+          status=0
+          python3 -I scripts/lint-style.py "$clean" > "$RUNNER_TEMP/separators" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/separators"
+          test "$status" = 1
+          grep -F 'UnicodeFixture.lean:2:' "$RUNNER_TEMP/separators" | grep -F 'U+2028'
+          grep -F 'UnicodeFixture.lean:3:' "$RUNNER_TEMP/separators" | grep -F 'U+2029'
+      - name: Check the project through the public cache
+        run: |
+          git switch --detach "$CHECK_COMMIT"
+          lake exe cache get
+          lake build
