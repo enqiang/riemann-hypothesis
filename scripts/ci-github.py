@@ -100,12 +100,10 @@ def find_run(args):
             candidates = [run for run in candidates if run.get("id") == args.run_id]
         order = {"merge_group": 0, "push": 1, "workflow_dispatch": 2}
         candidates.sort(key=lambda run: (order.get(run.get("event"), 9), -run.get("id", 0)))
-        in_scope = False
         pending = False
         for run in candidates:
             reason = run_scope_problem(run, sha)
             if reason is None:
-                in_scope = True
                 pending |= run.get("status") != "completed"
                 reason = build_problem(run)
             if reason is None:
@@ -115,9 +113,8 @@ def find_run(args):
                     return
                 reason = f"no unexpired artifact cache-{sha}"
             print(f"run {run.get('id')} ({run.get('event')}): {reason}", flush=True)
-        # The sibling build may not be visible yet, even if the API lists other runs.
-        # An explicitly selected run that is already visible can be rejected immediately.
-        may_appear = not in_scope and (args.run_id is None or not candidates)
+        # A different build may still appear when no run was selected explicitly.
+        may_appear = args.run_id is None or not candidates
         remaining = deadline - time.monotonic()
         if not (pending or may_appear) or remaining <= 0:
             raise ValueError(f"no successful self-hosted build of {sha} with a cache artifact")

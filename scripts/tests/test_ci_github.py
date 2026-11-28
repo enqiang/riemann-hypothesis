@@ -66,6 +66,14 @@ class FindRun(unittest.TestCase):
         self.assert_selected()
         self.assertEqual(self.api.call_count, 2)
 
+    def test_waits_for_push_after_a_failed_manual_build(self):
+        manual = build_run(id=6, event="workflow_dispatch", conclusion="failure")
+        self.runs.side_effect = [[manual], [manual, build_run()]]
+        ci.find_run(self.args)
+        self.assertEqual(self.runs.call_count, 2)
+        self.sleep.assert_called_once_with(30)
+        self.assert_selected()
+
     def test_selected_run_can_appear_after_first_poll(self):
         self.args.run_id = 7
         self.runs.side_effect = [[build_run(id=9)], [build_run()]]
@@ -78,11 +86,13 @@ class FindRun(unittest.TestCase):
         self.runs.return_value = [build_run(event="pull_request"), build_run(id=9)]
         self.assert_immediate_failure()
 
-    def test_terminal_failed_build_fails_immediately(self):
+    def test_selected_terminal_failed_build_fails_immediately(self):
+        self.args.run_id = 7
         self.runs.return_value = [build_run(conclusion="failure")]
         self.assert_immediate_failure()
 
-    def test_completed_run_still_needs_an_unexpired_cache_artifact(self):
+    def test_selected_completed_run_needs_an_unexpired_cache_artifact(self):
+        self.args.run_id = 7
         self.runs.return_value = [build_run()]
         self.api.side_effect = [
             {"jobs": [{"name": ci.JOB, "conclusion": "success", "labels": [ci.LABEL]}]},
