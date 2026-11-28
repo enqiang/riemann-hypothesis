@@ -1,0 +1,17 @@
+name: Verify cache build polling
+on:
+  push:
+    branches: [codex/verify-rh7720-review]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run the polling regressions and script suite
+        run: |
+          python3 -I scripts/tests/test_ci_github.py
+          python3 -I -m unittest discover -s scripts/tests -q
