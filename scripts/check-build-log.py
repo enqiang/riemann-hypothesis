@@ -5,21 +5,27 @@ import re
 import sys
 from pathlib import Path
 
-SOURCE_INFO = re.compile(r"^info: (?:\./)?src/.+\.lean:[0-9]+:[0-9]+:")
-# Remove this exception when #9138 clears the existing tactic suggestion.
+SOURCE_INFO = re.compile(r"^info: (?:\./)?(src/.+\.lean):[0-9]+:[0-9]+:(.*)")
+# Allow one matching message regardless of its source position. Remove after #9138.
 KNOWN_INFO = (
-    "info: src/New/Spanning/MainTerm/GlobalSieve.lean:294:25: Try this:",
+    "src/New/Spanning/MainTerm/GlobalSieve.lean",
+    " Try this:",
     "  [apply] ring_nf",
 )
 
 
 def main():
     log = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-    unexpected = [
-        line
-        for line, following in zip(log, log[1:] + [""])
-        if SOURCE_INFO.match(line) and (line, following) != KNOWN_INFO
-    ]
+    unexpected = []
+    known_info_seen = False
+    for line, following in zip(log, log[1:] + [""]):
+        diagnostic = SOURCE_INFO.match(line)
+        if diagnostic is None:
+            continue
+        if not known_info_seen and (*diagnostic.groups(), following) == KNOWN_INFO:
+            known_info_seen = True
+            continue
+        unexpected.append(line)
     if not unexpected:
         return 0
 

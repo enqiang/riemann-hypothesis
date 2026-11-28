@@ -33,6 +33,26 @@ class CheckBuildLog(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_allows_known_suggestion_with_dot_slash_prefix(self):
+        result = self.run_check(KNOWN_SUGGESTION.replace("info: src/", "info: ./src/"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_allows_known_suggestion_after_the_tactic_moves(self):
+        result = self.run_check(KNOWN_SUGGESTION.replace(":294:25:", ":305:17:"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_does_not_exempt_the_same_suggestion_in_another_file(self):
+        diagnostic = KNOWN_SUGGESTION.replace("GlobalSieve.lean", "Other.lean")
+        result = self.run_check(KNOWN_SUGGESTION + diagnostic)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Other.lean", result.stderr)
+
+    def test_does_not_exempt_an_additional_matching_suggestion(self):
+        diagnostic = KNOWN_SUGGESTION.replace(":294:25:", ":305:17:")
+        result = self.run_check(KNOWN_SUGGESTION + diagnostic)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(":305:17:", result.stderr)
+
     def test_rejects_new_source_info_alongside_known_suggestion(self):
         diagnostic = "info: src/New/Example.lean:5:0: Nat : Type"
         result = self.run_check(KNOWN_SUGGESTION + diagnostic)
