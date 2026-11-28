@@ -30,10 +30,13 @@ def lean(mode, *args):
 def lint(root, paths):
     if not paths:
         return []
-    result = subprocess.run(lean("text", root, *paths), capture_output=True, text=True)
+    result = subprocess.run(lean("text", root, *paths), capture_output=True)
+    stdout = result.stdout.decode("utf-8")
     if result.returncode:
-        raise SystemExit(result.stdout + result.stderr or "Mathlib's text linter failed.")
-    return [line.split(" : ", 3) for line in result.stdout.splitlines()]
+        raise SystemExit(stdout + result.stderr.decode("utf-8") or "Mathlib's text linter failed.")
+    # The diagnostics include literal offending characters, including line separators.
+    records = (line.removesuffix("\r") for line in stdout.split("\n"))
+    return [line.split(" : ", 3) for line in records if line]
 
 
 def main():
