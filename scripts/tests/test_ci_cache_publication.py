@@ -143,24 +143,68 @@ class Publication(unittest.TestCase):
         self.accept(first)
         self.accept(second)
 
+        candidates = [(self.head, first), (other_head, second)]
         with ThreadPoolExecutor(max_workers=2) as executor:
-            first_job = executor.submit(publisher.activate, self.root, self.head, first)
-            second_job = executor.submit(publisher.activate, self.root, other_head, second)
-            first_job.result()
-            second_job.result()
-        winner = self.objects[self.lookup_key]
-        self.assertIn(winner, (first.read_bytes(), second.read_bytes()))
-        publisher.activate(self.root, self.head, first)
-        publisher.activate(self.root, other_head, second)
-        self.assertEqual(self.objects[self.lookup_key], winner)
+            jobs = [executor.submit(publisher.activate, self.root, sha, receipt)
+                    for sha, receipt in candidates]
+            errors = [job.exception() for job in jobs]
+        self.assertEqual(errors.count(None), 1)
+        winner_index = errors.index(None)
+        loser_error = errors[1 - winner_index]
+        self.assertIsInstance(loser_error, ValueError)
+        self.assertIn("Start a new publication run", str(loser_error))
+        sha, receipt = candidates[winner_index]
+        publisher.activate(self.root, sha, receipt)
+        self.assertEqual(self.objects[self.lookup_key], receipt.read_bytes())
+
+    def test_existing_healthy_record_is_accepted_for_equivalent_commit(self):
+        first = self.stage("first")
+        self.accept(first)
+        self.publish_command(self.head, "--activate", str(first))
+        objects_before = self.objects.copy()
+
+        other_head = self.commit("same inputs")
+        selected = self.stage("other", sha=other_head)
+        self.assertEqual(selected.read_bytes(), first.read_bytes())
+        self.accept(selected)
+        self.publish_command(other_head, "--activate", str(selected))
+        self.assertEqual(self.objects, objects_before)
+
+    def test_metadata_valid_legacy_winner_must_pass_acceptance(self):
+        legacy = self.stage("rejected")
+        other_head = self.commit("same inputs")
+        replacement = self.stage("replacement", sha=other_head)
+        self.accept(replacement)
+
+        # The old publisher installed the receipt before its clean build check.
+        legacy_bytes = legacy.read_bytes()
+        self.objects[self.lookup_key] = legacy_bytes
+        self.assertEqual(cache.find_record(self.identity, self.fetch), cache.decode(legacy_bytes))
+        with self.assertRaisesRegex(ValueError, "CACHE.md#recovering-a-published-record"):
+            self.publish_command(other_head, "--activate", str(replacement))
+        self.assertEqual(self.objects[self.lookup_key], legacy_bytes)
+
+        selected = self.stage("new-run", sha=other_head)
+        self.assertEqual(selected.read_bytes(), legacy_bytes)
+        with self.assertRaisesRegex(ValueError, "clean build check failed"):
+            self.accept(selected)
+        self.assertEqual(self.objects[self.lookup_key], legacy_bytes)
+
+        # A maintainer removes just the lookup record after confirming the failure.
+        del self.objects[self.lookup_key]
+        repaired = self.stage("repaired", sha=other_head)
+        self.accept(repaired)
+        self.publish_command(other_head, "--activate", str(repaired))
+        self.assertEqual(self.objects[self.lookup_key], repaired.read_bytes())
 
     def test_candidate_rejects_wrong_inputs_and_wrong_commit(self):
         receipt = self.stage("original")
-        self.r2.reset_mock()
         equivalent = self.commit("same build inputs")
-        with self.assertRaisesRegex(ValueError, "not for the selected commit"):
+        with self.assertRaisesRegex(ValueError, "Start a new publication run"):
             self.publish_command(equivalent, "--activate", str(receipt))
+        self.assertIsNone(cache.find_record(self.identity, self.fetch))
 
+        self.r2.reset_mock()
         (self.root / "src/A.lean").write_text("-- Different build inputs\n")
         publisher.git(self.root, "add", "src/A.lean")
         changed = self.commit("different inputs")

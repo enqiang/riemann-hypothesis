@@ -23,12 +23,12 @@ Checks, before any credential is read:
 - every artifact's name is its stock Lake content hash (computeBinFileHash, with the toolchain of
   <commit>), and stock leantar extracts it.
 
-With --stage-receipt, it derives the R2 key from R2_ACCOUNT_TOKEN, uploads the immutable
-artifacts, map and manifest, and writes a candidate receipt for the workflow to hand off.
-Ordinary clients only look up active records. A separate runner restores the candidate and
-checks that Lake needs no build. After that job succeeds, --activate binds the same receipt
-to the target commit and conditionally creates the input-fingerprint record. If an equivalent
-build record is already active, the existing record stays active.
+With --stage-receipt, it derives the R2 key from R2_ACCOUNT_TOKEN. If a record is already
+active for these inputs, it hands off that receipt. Otherwise it uploads the immutable
+artifacts, map and manifest, and hands off the new receipt. A separate runner restores the
+selected receipt and checks that Lake needs no build. After that job succeeds, --activate
+conditionally creates the input-fingerprint record for the target commit or confirms that
+the active record is byte-for-byte the receipt that passed acceptance.
 
 Adapted from scripts/publish-ci-cache.py of branch alpoge and from the hand publisher of the
 rh-buildq hosts.
@@ -300,10 +300,21 @@ def wait_for_public_record(key, expected):
 
 
 def stage(checked):
-    """Upload a verified candidate without creating a public lookup record."""
+    """Select the active receipt or upload a verified candidate's immutable objects."""
     record = checked["record"]
+    key = f"{cli.PREFIX}/inputs/{record['input_fingerprint']}.json"
     with tempfile.TemporaryDirectory(prefix="publish-ci-cache-auth-") as temporary:
         r2 = R2(temporary)
+        existing = r2.get(key)
+        if existing is not None:
+            try:
+                if len(existing) > cli.MAX_RECEIPT or cli.matching_record(existing, checked["identity"]) is None:
+                    raise ValueError("receipt has the wrong inputs or exceeds the size limit")
+            except ValueError as error:
+                raise ValueError(f"active record {key} failed validation: {error}. "
+                                 "See CACHE.md#recovering-a-published-record.") from error
+            log(f"record {key}: selected the active receipt for acceptance")
+            return existing
 
         def upload(item):
             artifact, path = item
@@ -316,6 +327,7 @@ def stage(checked):
         log(f"map {record['map_key']}: " + r2.immutable(record["map_key"], checked["contents"], MAP_TYPE))
         log(f"module manifest {record['module_manifest_key']}: "
             + r2.immutable(record["module_manifest_key"], checked["manifest"], "application/gzip"))
+    return checked["record_bytes"]
 
 
 def activate(root, sha, receipt):
@@ -324,19 +336,21 @@ def activate(root, sha, receipt):
         raise ValueError(f"{sha} is not a commit of this checkout")
     identity = cli.identity_at(root, sha, {})
     data, record = cli.load_candidate(receipt, identity)
-    if record["candidate_head"] != sha or record["candidate_tree"] != git(root, "rev-parse", f"{sha}^{{tree}}"):
+    for_target = record["candidate_head"] == sha
+    if for_target and record["candidate_tree"] != git(root, "rev-parse", f"{sha}^{{tree}}"):
         raise ValueError("candidate receipt is not for the selected commit")
     key = f"{cli.PREFIX}/inputs/{record['input_fingerprint']}.json"
     with tempfile.TemporaryDirectory(prefix="publish-ci-cache-auth-") as temporary:
         r2 = R2(temporary)
-        if r2.create(key, data, "application/json", "no-cache"):
+        # A receipt from an equivalent commit can only confirm a record that is already active.
+        if for_target and r2.create(key, data, "application/json", "no-cache"):
             log(f"record {key}: created")
+        elif r2.get(key) == data:
+            log(f"record {key}: the accepted receipt is already active")
         else:
-            existing = r2.get(key)
-            if existing is None or cli.matching_record(existing, identity) is None:
-                raise ValueError(f"an existing record is not valid for these inputs: {key}")
-            log(f"record {key}: a record for these build inputs is already active")
-            data = existing
+            raise ValueError(f"record {key}: the active receipt differs from the accepted receipt or is missing. "
+                             "Start a new publication run to check the active receipt. "
+                             "See CACHE.md#recovering-a-published-record if it fails acceptance.")
     wait_for_public_record(key, data)
 
 
@@ -347,9 +361,9 @@ def main():
     parser.add_argument("--project", type=Path, default=Path.cwd())
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--stage-receipt", type=Path, metavar="FILE",
-                      help="upload verified objects and write the candidate receipt (needs R2_ACCOUNT_TOKEN)")
+                      help="write the active or newly staged receipt (needs R2_ACCOUNT_TOKEN)")
     mode.add_argument("--activate", type=Path, metavar="RECEIPT",
-                      help="publish the accepted receipt (needs R2_ACCOUNT_TOKEN)")
+                      help="publish or confirm the accepted receipt (needs R2_ACCOUNT_TOKEN)")
     args = parser.parse_args()
     root = args.project.resolve()
     if args.activate is not None:
@@ -362,8 +376,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="publish-ci-cache-") as work:
         checked = verify(root, args.sha, args.staging, Path(work))
         if args.stage_receipt is not None:
-            stage(checked)
-            args.stage_receipt.write_bytes(checked["record_bytes"])
+            args.stage_receipt.write_bytes(stage(checked))
         else:
             os.environ.pop("R2_ACCOUNT_TOKEN", None)
             log("verified only")
